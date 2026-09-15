@@ -487,6 +487,56 @@ CDN:
 still have to upload the built files to the CDN yourself, or set up origin pull. For a CDN subdirectory, include it
 in the URL (``https://my-cool-app.com.global.prod.fastly.net/awesome-website/build/``).
 
+Separating metadata from public assets
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+By default, Reprise writes ``entrypoints.json`` and ``manifest.json`` into ``outputPath``. If you want to keep these
+files separate from your compiled assets (for example, to avoid uploading them to public object storage), set
+``metadataPath``:
+
+.. code-block:: javascript
+
+    // vite.config.ts
+    import { defineConfig } from 'vite'
+    import Symfony from '@symfony/reprise/vite'
+
+    export default defineConfig({
+      plugins: [
+        Symfony({
+          outputPath: 'public/build',
+          metadataPath: 'var/reprise',
+        }),
+      ],
+    })
+
+.. code-block:: javascript
+
+    // rsbuild.config.ts
+    import { defineConfig } from '@rsbuild/core'
+    import Symfony from '@symfony/reprise/rsbuild'
+
+    export default defineConfig({
+      plugins: [
+        Symfony({
+          outputPath: 'public/build',
+          metadataPath: 'var/reprise',
+        }),
+      ],
+    })
+
+Then configure Symfony to read the files from that directory:
+
+.. code-block:: yaml
+
+    # config/packages/reprise.yaml
+    reprise:
+        output_path: '%kernel.project_dir%/var/reprise'
+
+    # config/packages/framework.yaml (when using manifest.json)
+    framework:
+        assets:
+            json_manifest_path: '%kernel.project_dir%/var/reprise/manifest.json'
+
 Subresource Integrity
 ~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -667,7 +717,7 @@ Reprise exposes a few optional settings under its own configuration, all shown h
         link_attributes: []
 
 - ``output_path``: filesystem directory holding ``entrypoints.json`` and ``manifest.json``. Must match the plugin's
-  own ``outputPath``. Accepts ``false`` to disable the default build entirely (requires at least one entry under
+  own ``outputPath`` (or ``metadataPath`` if customized). Accepts ``false`` to disable the default build entirely (requires at least one entry under
   ``builds``).
 - ``builds``: a map of build name -> output directory for additional bundles. Each named build is addressed by passing
   ``build='<name>'`` to the tag and file functions. See `Multiple builds`_.

@@ -26,7 +26,7 @@ export const unpluginFactory: UnpluginFactory<Options | undefined> = (options, _
     // Vite project root (from `configResolved`); keys imported assets in `bundleToGraph`.
     let root = cwd;
     // SRI finishes entrypoints.json in `writeBundle`; stash what it needs.
-    let pendingIntegrity: { graph: NormalizedGraph; ctx: BuildContext } | null = null;
+    let pendingIntegrity: { graph: NormalizedGraph; ctx: BuildContext; manifest: ManifestJson } | null = null;
 
     return {
         name: '@symfony/reprise',
@@ -72,11 +72,6 @@ export const unpluginFactory: UnpluginFactory<Options | undefined> = (options, _
                     urlPrefix: resolved.publicPath,
                     manifestKeyPrefix: resolved.manifestKeyPrefix,
                 };
-                this.emitFile({
-                    type: 'asset',
-                    fileName: 'entrypoints.json',
-                    source: `${JSON.stringify(buildEntrypoints(graph, ctx), null, 2)}\n`,
-                });
                 const copyFiles = resolveCopyFiles(resolved.copy, true);
                 for (const file of copyFiles) {
                     this.emitFile({ type: 'asset', fileName: file.physicalName, source: file.source });
@@ -85,29 +80,46 @@ export const unpluginFactory: UnpluginFactory<Options | undefined> = (options, _
                     ...buildManifest(graph, ctx),
                     ...copyManifest(copyFiles, resolved),
                 };
-                this.emitFile({
-                    type: 'asset',
-                    fileName: 'manifest.json',
-                    source: `${JSON.stringify(manifest, null, 2)}\n`,
-                });
+                if (resolved.metadataPath === resolved.outputPath) {
+                    this.emitFile({
+                        type: 'asset',
+                        fileName: 'entrypoints.json',
+                        source: `${JSON.stringify(buildEntrypoints(graph, ctx), null, 2)}\n`,
+                    });
+                    this.emitFile({
+                        type: 'asset',
+                        fileName: 'manifest.json',
+                        source: `${JSON.stringify(manifest, null, 2)}\n`,
+                    });
+                }
                 // Vite finalizes chunk bytes only on disk write (replacing markers like `__VITE_PRELOAD__`),
                 // so the in-memory bundle differs from the file — hash for SRI in `writeBundle`, not here.
-                if (resolved.integrity) pendingIntegrity = { graph, ctx };
+                // When metadataPath differs from outputPath, files are written in `writeBundle` to keep
+                // them out of Vite's output directory.
+                if (resolved.integrity || resolved.metadataPath !== resolved.outputPath) {
+                    pendingIntegrity = { graph, ctx, manifest };
+                }
             },
 
             writeBundle() {
-                if (!pendingIntegrity || !resolved.integrity) return;
-                const { graph, ctx } = pendingIntegrity;
+                if (!pendingIntegrity) return;
+                const { graph, ctx, manifest } = pendingIntegrity;
                 pendingIntegrity = null;
-                graph.integrity = integrityFromDisk(
-                    referencedFileNames(graph.entryPoints),
-                    resolved.outputPath,
-                    resolved.integrity.algorithms
-                );
-                writeFileSync(
-                    join(resolved.outputPath, 'entrypoints.json'),
-                    `${JSON.stringify(buildEntrypoints(graph, ctx), null, 2)}\n`
-                );
+                if (resolved.integrity) {
+                    graph.integrity = integrityFromDisk(
+                        referencedFileNames(graph.entryPoints),
+                        resolved.outputPath,
+                        resolved.integrity.algorithms
+                    );
+                }
+                if (resolved.metadataPath !== resolved.outputPath) {
+                    writeSymfonyFiles(resolved.metadataPath, buildEntrypoints(graph, ctx), manifest);
+                } else if (resolved.integrity) {
+                    writeFileSync(
+                        join(resolved.metadataPath, 'entrypoints.json'),
+                        `${JSON.stringify(buildEntrypoints(graph, ctx), null, 2)}\n`
+                    );
+                }
             },
 
             configResolved(config) {
@@ -151,7 +163,7 @@ export const unpluginFactory: UnpluginFactory<Options | undefined> = (options, _
                         const copyFiles = resolveCopyFiles(resolved.copy, false);
                         writeCopyFiles(copyFiles, resolved.outputPath);
                         writeSymfonyFiles(
-                            resolved.outputPath,
+                            resolved.metadataPath,
                             buildEntrypoints(configToDevGraph(server.config), ctx),
                             copyManifest(copyFiles, resolved)
                         );
@@ -332,7 +344,7 @@ export const unpluginFactory: UnpluginFactory<Options | undefined> = (options, _
                                 manifest = { ...buildManifest(graph, ctx), ...copyManifest(copiedInBuild, resolved) };
                             }
                             try {
-                                writeSymfonyFiles(resolved.outputPath, buildEntrypoints(graph, ctx), manifest);
+                                writeSymfonyFiles(resolved.metadataPath, buildEntrypoints(graph, ctx), manifest);
                             } catch (err) {
                                 c.getInfrastructureLogger('@symfony/reprise').error(
                                     `[@symfony/reprise] failed to write entrypoints.json: ${err instanceof Error ? err.message : String(err)}`
